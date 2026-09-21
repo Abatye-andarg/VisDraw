@@ -1,2 +1,18 @@
-*.md
-!readme.md
+# Build output and dependencies
+**/target/
+**/node_modules/
+**/dist/
+*.tsbuildinfo
+
+# Local configuration and tooling
+.env
+.env.*
+!.env.example
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# AI communication material does not belong in this repository
+[Hh]elp[Ff]orAI/
