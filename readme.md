@@ -1,31 +1,52 @@
 # Visual Notes
 
-A personal workspace for written notes, freehand boards, and structured diagrams.
+Visual Notes is a personal workspace for written notes, freehand boards, and structured diagrams. It uses a React + TypeScript frontend, an independent Java/Spring Boot backend, and MySQL.
 
-## Current milestone
+The current interface displays backend connection status. The backend connects to MySQL and validates and applies database migrations at startup.
 
-Milestone 1 provides an independent Spring Boot backend and a React + TypeScript frontend with a connection-status page. Accounts, editors, and persistence are not implemented yet. MySQL and schema migrations are planned for milestone 2.
+## Project structure
 
-`backend/` owns the HTTP service. `frontend/` owns the browser interface. The backend can run and be accessed without React. `HelpForAI` is external communication material and is not part of this project.
+- `backend/` — Spring Boot HTTP service, database configuration, SQL migrations, and integration tests.
+- `frontend/` — React interface and Vite development server.
+- `compose.yaml` — local MySQL service with persistent storage.
 
 ## Prerequisites
 
-- Java JDK 21 (`java -version`)
-- Node.js 24.13 or newer within the 24.x line, with npm (`node --version`)
-- Network access for the first dependency download
+- Java JDK 21
+- Node.js 24.13 or newer within the 24.x line, with npm
+- Docker Engine with Docker Compose and permission to access the Docker daemon
+- Network access for initial dependency and container-image downloads
 
-With nvm installed, run `nvm install` and `nvm use` from this directory. The Maven wrapper pins Maven 3.9.16, so a separate Maven installation is unnecessary. Windows users can use `mvnw.cmd` instead of `bash mvnw`.
+With nvm installed, run `nvm install` and `nvm use` from the repository root. The Maven wrapper supplies Maven 3.9.16; a separate Maven installation is unnecessary. Windows users can use `mvnw.cmd` instead of `bash mvnw` and set environment variables using their shell.
 
-## Run locally
+## Local setup
 
-From the repository root, in one terminal:
+From the repository root, create local configuration if `.env` does not already exist:
+
+```sh
+cp .env.example .env
+```
+
+Set `DB_PASSWORD` and `MYSQL_ROOT_PASSWORD` in `.env` to different random values. `openssl rand -hex 24` can generate each value. Use plain, unquoted `KEY=value` entries (hexadecimal passwords work with both Compose and Spring). Avoid shell commands, `export`, quotes, or variable expansion in this shared file. `.env` is ignored by Git; `.env.example` contains no credentials. Compose refuses to start with empty passwords.
+
+Start MySQL:
+
+```sh
+docker compose up -d --wait mysql
+```
+
+MySQL listens only on `127.0.0.1:3307` by default. The application uses a dedicated `visualnotes` database user, not root. Its permissions are scoped to the `visualnotes` database and include the schema changes required by Flyway.
+
+In a terminal at the repository root, start the backend:
 
 ```sh
 cd backend
 bash mvnw spring-boot:run
 ```
 
-In another terminal, also starting at the repository root:
+The Maven run goal selects the `local` Spring profile, which imports `../.env` directly. No shell exports are required. Run this command from `backend/`; a missing `.env` produces an explicit configuration error. This default applies only to `spring-boot:run`, not tests or the packaged application. To override it, use `-Dspring-boot.run.profiles=your-profile`. The backend defaults to port 8080 and runs migrations before accepting requests. Database connection or migration validation failures prevent startup.
+
+In a second terminal at the repository root:
 
 ```sh
 cd frontend
@@ -33,35 +54,68 @@ npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. The page checks the backend on load and displays **Connected** when it receives a healthy response. Use **Check again** to refresh the status. The request times out after five seconds; this page does not poll continuously.
+Open http://127.0.0.1:5173. The page checks backend health on load. **Check again** refreshes the result; requests time out after five seconds. Status is not polled continuously.
 
-The backend defaults to port 8080. Vite listens on loopback port 5173 and fails if that port is occupied, instead of silently choosing another one.
+Vite uses loopback port 5173 and fails if that port is occupied. Its development proxy forwards `/actuator/health` to the backend. `npm run preview` serves the production bundle but does not provide this proxy; deployed frontend hosting needs a corresponding reverse proxy.
 
-The project currently resides on an exFAT drive. `frontend/.npmrc` disables executable symlinks, and npm scripts invoke the installed tools through Node directly. This also works on ordinary filesystems.
+`frontend/.npmrc` disables executable symlinks so installation works on filesystems such as exFAT. npm scripts invoke installed tools directly through Node.
 
 ## Configuration
 
-To change the backend port:
+| Variable | Purpose |
+| --- | --- |
+| `DB_PORT` | Local MySQL host port; defaults to `3307` |
+| `DB_USERNAME` | Database user; local default is `visualnotes` |
+| `DB_PASSWORD` | Required application database password |
+| `MYSQL_ROOT_PASSWORD` | Required by Compose to initialize MySQL; not used by the backend |
+| `PORT` | Backend HTTP port; defaults to `8080` |
+| `DB_URL` | Required JDBC URL when running without the `local` profile |
+| `SPRING_PROFILES_ACTIVE` | Spring profile for direct Java/IDE launches; Maven local runs select it automatically |
+
+The `local` profile constructs a loopback JDBC URL from `DB_PORT` and permits unencrypted local connections. For another environment, omit that profile and supply `DB_URL`, `DB_USERNAME`, and `DB_PASSWORD`. Configure appropriate TLS in that environment's JDBC URL; local connection settings are not deployment defaults.
+
+To change the backend port, export `PORT=8081` before starting it. Copy `frontend/.env.example` to `frontend/.env.local`, set `BACKEND_URL=http://127.0.0.1:8081`, and restart Vite. `BACKEND_URL` configures the development proxy. Never put secrets in browser-exposed environment variables.
+
+MySQL initialization variables only apply when the data volume is empty. Editing passwords in `.env` does not update existing database accounts; change the account password in MySQL as well.
+
+## Database and migrations
+
+The Compose service pins MySQL 8.4.11 and stores data in the Docker-managed `mysql-data` volume. The data is not stored in the source directory. Stop the local service with:
 
 ```sh
-cd backend
-PORT=8081 bash mvnw spring-boot:run
+docker compose down
 ```
 
-In `frontend/`, copy `.env.example` to `.env.local` and set `BACKEND_URL=http://127.0.0.1:8081`, then restart Vite. This variable configures the development proxy and is not a browser secret. Never put secrets in frontend environment variables or commit local environment files.
+This preserves the volume. Starting the service again reuses the same database. Adding `--volumes` to `down` deletes that database permanently.
 
-Vite proxies `/actuator/health` to the backend during development, avoiding the need for a permissive CORS policy. Production hosting and reverse-proxy configuration are outside this milestone. `npm run preview` previews static build output; it does not provide this development proxy.
+Flyway loads versioned SQL files from `backend/src/main/resources/db/migration/`. The initial migration sets `utf8mb4` encoding and `utf8mb4_0900_ai_ci` collation (case- and accent-insensitive defaults). It creates no application tables. Flyway maintains its own `flyway_schema_history` table.
 
-## Verification
+Add schema changes as a new `V<number>__description.sql` file. Applied migrations are immutable: Flyway checks their recorded checksums on startup. Basic Spring SQL initialization is disabled, and Flyway's destructive clean operation is disabled. No ORM schema generation is configured.
 
-Backend integration tests and executable JAR build:
+To inspect the local database, use the password from `.env` at the interactive prompt:
+
+```sh
+docker compose exec mysql mysql -u visualnotes -p visualnotes
+```
+
+Then run:
+
+```sql
+SELECT version, description, success FROM flyway_schema_history;
+```
+
+## Tests and builds
+
+With Docker running:
 
 ```sh
 cd backend
 bash mvnw verify
 ```
 
-Frontend lint, TypeScript checks, and production bundle:
+Tests create a disposable MySQL container on a dynamically assigned port. They do not use the Compose database or require the local `.env` file. The suite verifies HTTP health and restricted management exposure, migration application, Unicode defaults, repeat execution without reapplying changes, and rejection of modified migration checksums. Missing Docker access fails the suite rather than silently skipping database tests.
+
+Frontend checks:
 
 ```sh
 cd frontend
@@ -69,43 +123,25 @@ npm run lint
 npm run build
 ```
 
-While the backend is running:
+With the backend running:
 
 ```sh
 curl --fail http://127.0.0.1:8080/actuator/health
-curl --fail http://127.0.0.1:5173/actuator/health
 ```
 
-Both should return JSON with `"status":"UP"` (health-group metadata may also appear); the second also requires Vite. Only the health endpoint is exposed, without component details. Backend integration tests exercise real HTTP requests on a random port and check that `/actuator/env` is unavailable.
+Expect JSON containing `"status":"UP"`; database health contributes to the result. Component and connection details are hidden. With Vite running, the same endpoint is accessible through `http://127.0.0.1:5173/actuator/health`.
 
-In the browser:
-
-1. Start both services and confirm **Connected**.
-2. Stop the backend and click **Check again**. Confirm **Unable to connect**, with a retry button.
-3. Restart the backend and retry. Confirm **Connected** returns without reloading.
-
-A previously successful status remains until the next check. It is not a continuous availability monitor.
-
-To run the packaged backend independently:
+The backend build creates `backend/target/visualnotes-0.0.1-SNAPSHOT.jar`. For a local packaged run, start from the repository root:
 
 ```sh
-java -jar backend/target/visualnotes-0.0.1-SNAPSHOT.jar
+cd backend
+java -jar target/visualnotes-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
-## Tool choices
+For an IDE launch, select the `local` Spring profile once in its run configuration and use `backend/` as the working directory. Packaged deployments without that profile use externally supplied database configuration.
 
-- [Spring Boot](https://spring.io/projects/spring-boot) 4.1.1 supplies application configuration and the HTTP server. [Actuator](https://docs.spring.io/spring-boot/api/rest/actuator/health.html) supplies health reporting without a custom endpoint. Spring Boot is maintained by the Spring project and licensed under Apache-2.0.
-- [React](https://github.com/facebook/react) supplies the interface, and [Vite](https://vite.dev/guide/) supplies the development server and production bundler. Both are actively maintained and MIT licensed. The development proxy is not a production deployment solution.
-- TypeScript provides static checking (Apache-2.0); the Vite template includes Oxlint for linting (MIT). npm's lockfile records exact frontend dependency versions.
+## Main dependencies
 
-These dependency licenses do not choose a license for Visual Notes itself. No editor, routing, state-management, or database libraries are introduced in this milestone.
+[Spring Boot](https://spring.io/projects/spring-boot) supplies the HTTP service and health reporting. [Flyway](https://docs.spring.io/spring-boot/how-to/data-initialization.html) manages SQL migrations through Spring Boot's startup integration. [Testcontainers](https://java.testcontainers.org/modules/databases/mysql/) runs database tests against real MySQL. [React](https://github.com/facebook/react) supplies the interface, and [Vite](https://vite.dev/guide/) supplies development and build tooling.
 
-## Git checkpoint
-
-After verification, review `git status` and commit this foundation as:
-
-```text
-chore: initialize backend and frontend foundation
-```
-
-Push the verified checkpoint to the configured remote when ready. Build outputs, installed dependencies, and local configuration are ignored; project Markdown documentation is tracked normally.
+Spring Boot manages backend dependency versions; `frontend/package-lock.json` records frontend dependency versions.
