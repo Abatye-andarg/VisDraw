@@ -2,13 +2,27 @@
 
 Visual Notes is a personal workspace for written notes, freehand boards, and structured diagrams. It uses a React + TypeScript frontend, an independent Java/Spring Boot backend, and MySQL.
 
-The current interface displays backend connection status. The backend connects to MySQL and validates and applies database migrations at startup.
+The current interface displays backend connection status. The backend provides account registration, sign-in, sign-out, and current-user APIs, with MySQL persistence through Spring Data JPA and Hibernate. See the [account API documentation](docs/auth-api.md) for request formats and examples.
 
 ## Project structure
 
-- `backend/` — Spring Boot HTTP service, database configuration, SQL migrations, and integration tests.
+- `backend/` — Spring Web MVC controllers, services, JPA models and repositories, security, and integration tests.
 - `frontend/` — React interface and Vite development server.
 - `compose.yaml` — local MySQL service with persistent storage.
+
+Backend Java packages under `com.visualnotes` are organized by responsibility:
+
+| Package | Responsibility |
+| --- | --- |
+| `controller` | HTTP endpoints and API error responses |
+| `service` | Business logic and account operations |
+| `model` | JPA entities, persistence mappings, and relationships |
+| `repository` | Spring Data JPA repository interfaces |
+| `dto` | API request and response data |
+| `security` | Authentication, CSRF, and session configuration |
+| `exception` | Application exceptions handled by the controller layer |
+
+React supplies the user interface; backend controllers return JSON. General application configuration belongs in `config`; there are currently no classes in that package.
 
 ## Prerequisites
 
@@ -35,7 +49,7 @@ Start MySQL:
 docker compose up -d --wait mysql
 ```
 
-MySQL listens only on `127.0.0.1:3307` by default. The application uses a dedicated `visualnotes` database user, not root. Its permissions are scoped to the `visualnotes` database and include the schema changes required by Flyway.
+MySQL listens only on `127.0.0.1:3307` by default. The application uses a dedicated `visualnotes` database user, not root. Its permissions are scoped to the `visualnotes` database and include local schema updates performed by Hibernate.
 
 In a terminal at the repository root, start the backend:
 
@@ -44,7 +58,7 @@ cd backend
 bash mvnw spring-boot:run
 ```
 
-The Maven run goal selects the `local` Spring profile, which imports `../.env` directly. No shell exports are required. Run this command from `backend/`; a missing `.env` produces an explicit configuration error. This default applies only to `spring-boot:run`, not tests or the packaged application. To override it, use `-Dspring-boot.run.profiles=your-profile`. The backend defaults to port 8080 and runs migrations before accepting requests. Database connection or migration validation failures prevent startup.
+The Maven run goal selects the `local` Spring profile, which imports `../.env` directly. No shell exports are required. Run this command from `backend/`; a missing `.env` produces an explicit configuration error. This default applies only to `spring-boot:run`, not tests or the packaged application. To override it, use `-Dspring-boot.run.profiles=your-profile`. The backend defaults to port 8080 and initializes Hibernate before accepting requests. Database connection or schema validation failures prevent startup.
 
 In a second terminal at the repository root:
 
@@ -78,7 +92,7 @@ To change the backend port, export `PORT=8081` before starting it. Copy `fronten
 
 MySQL initialization variables only apply when the data volume is empty. Editing passwords in `.env` does not update existing database accounts; change the account password in MySQL as well.
 
-## Database and migrations
+## Database and schema
 
 The Compose service pins MySQL 8.4.11 and stores data in the Docker-managed `mysql-data` volume. The data is not stored in the source directory. Stop the local service with:
 
@@ -88,9 +102,11 @@ docker compose down
 
 This preserves the volume. Starting the service again reuses the same database. Adding `--volumes` to `down` deletes that database permanently.
 
-Flyway loads versioned SQL files from `backend/src/main/resources/db/migration/`. The initial migration sets `utf8mb4` encoding and `utf8mb4_0900_ai_ci` collation (case- and accent-insensitive defaults). It creates no application tables. Flyway maintains its own `flyway_schema_history` table.
+JPA entity annotations in `backend/src/main/java/com/visualnotes/model/` define tables and relationships. The `accounts` table stores normalized unique email addresses, password hashes, generated UUID identifiers, and creation timestamps.
 
-Add schema changes as a new `V<number>__description.sql` file. Applied migrations are immutable: Flyway checks their recorded checksums on startup. Basic Spring SQL initialization is disabled, and Flyway's destructive clean operation is disabled. No ORM schema generation is configured.
+The `local` profile uses `spring.jpa.hibernate.ddl-auto=update`, so Hibernate creates or adjusts tables during startup and keeps existing rows. Automatic updates do not reliably handle changes such as renaming columns; review those changes explicitly. Other environments use `validate`: Hibernate checks the existing schema and fails startup if it is incompatible. They require the schema to be provisioned separately. Automatic schema creation with data deletion is not enabled.
+
+Open Session in View is disabled (`spring.jpa.open-in-view=false`). Services define transaction boundaries, and controllers return DTOs rather than persistence entities. MySQL 8.4 uses `utf8mb4` by default; the email mapping specifies binary collation for the already-normalized values.
 
 To inspect the local database, use the password from `.env` at the interactive prompt:
 
@@ -101,7 +117,8 @@ docker compose exec mysql mysql -u visualnotes -p visualnotes
 Then run:
 
 ```sql
-SELECT version, description, success FROM flyway_schema_history;
+SHOW TABLES;
+DESCRIBE accounts;
 ```
 
 ## Tests and builds
@@ -113,7 +130,7 @@ cd backend
 bash mvnw verify
 ```
 
-Tests create a disposable MySQL container on a dynamically assigned port. They do not use the Compose database or require the local `.env` file. The suite verifies HTTP health and restricted management exposure, migration application, Unicode defaults, repeat execution without reapplying changes, and rejection of modified migration checksums. Missing Docker access fails the suite rather than silently skipping database tests.
+Tests create a disposable MySQL container on a dynamically assigned port. They do not use the Compose database or require the local `.env` file. The suite verifies HTTP health, restricted management exposure, Hibernate schema creation, JPA persistence, and compatibility with an existing account table. Account tests also cover validation, password hashing, concurrent duplicate registration, session isolation and rotation, CSRF protection, and logout. Missing Docker access fails the suite rather than silently skipping database tests.
 
 Frontend checks:
 
@@ -142,6 +159,18 @@ For an IDE launch, select the `local` Spring profile once in its run configurati
 
 ## Main dependencies
 
-[Spring Boot](https://spring.io/projects/spring-boot) supplies the HTTP service and health reporting. [Flyway](https://docs.spring.io/spring-boot/how-to/data-initialization.html) manages SQL migrations through Spring Boot's startup integration. [Testcontainers](https://java.testcontainers.org/modules/databases/mysql/) runs database tests against real MySQL. [React](https://github.com/facebook/react) supplies the interface, and [Vite](https://vite.dev/guide/) supplies development and build tooling.
+| Technology | Responsibility |
+| --- | --- |
+| Spring Boot and Spring Web MVC | Application configuration, REST controllers, and HTTP handling |
+| Spring Security | Authentication, session management, password encoding, and CSRF protection |
+| Spring Data JPA | Repository implementations and persistence operations |
+| Hibernate ORM | JPA entity mapping, database access, and schema handling |
+| Lombok | Compile-time getters and constructors |
+| Jakarta Bean Validation / Hibernate Validator | Request validation |
+| MySQL Connector/J | Communication with MySQL |
+| Testcontainers and JUnit | Integration tests using disposable MySQL databases |
+| React, TypeScript, and Vite | Browser interface and frontend tooling |
 
-Spring Boot manages backend dependency versions; `frontend/package-lock.json` records frontend dependency versions.
+Spring Boot manages compatible backend dependency versions; `frontend/package-lock.json` records frontend dependency versions. Lombok is configured as a Maven annotation processor and excluded from the packaged application. Enable Lombok support and annotation processing in your IDE if it does not detect generated methods.
+
+References: [Spring Boot SQL/JPA support](https://docs.spring.io/spring-boot/reference/data/sql.html), [Spring Security](https://docs.spring.io/spring-security/reference/), and [Lombok Maven setup](https://projectlombok.org/setup/maven).

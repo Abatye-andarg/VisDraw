@@ -4,28 +4,25 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-
+import java.util.UUID;
+import com.visualnotes.model.Account;
+import com.visualnotes.repository.AccountRepository;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
-import org.flywaydb.core.Flyway;
-import java.nio.file.Path;
-import java.nio.file.Files;
-import java.nio.charset.StandardCharsets;
 import tools.jackson.databind.json.JsonMapper;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.server.LocalServerPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "spring.jpa.hibernate.ddl-auto=update")
 class VisualNotesApplicationTests {
     @Container
     static final MySQLContainer MYSQL = new MySQLContainer("mysql:8.4.11");
@@ -38,42 +35,20 @@ class VisualNotesApplicationTests {
     }
 
     @Autowired
-    private Flyway flyway;
-
-    @Autowired
-    private JdbcTemplate jdbc;
-
-    @Test
-    void migrationsConfigureUnicodeAndAreNotReapplied() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
-        assertThat(jdbc.queryForObject("SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = DATABASE()", String.class))
-                .isEqualTo("utf8mb4");
-        assertThat(jdbc.queryForObject("SELECT DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = DATABASE()", String.class))
-                .isEqualTo("utf8mb4_0900_ai_ci");
-        assertThat(flyway.migrate().migrationsExecuted).isZero();
-        assertThat(flyway.validateWithResult().validationSuccessful).isTrue();
-    }
-
-    @Test
-    void validationRejectsChangesToAnAppliedMigration(@TempDir Path directory) throws Exception {
-        try (var original = getClass().getResourceAsStream("/db/migration/V1__configure_database_unicode.sql")) {
-            assertThat(original).isNotNull();
-            String changed = new String(original.readAllBytes(), StandardCharsets.UTF_8)
-                    .replace("utf8mb4_0900_ai_ci", "utf8mb4_bin");
-            Files.writeString(directory.resolve("V1__configure_database_unicode.sql"), changed);
-        }
-        var modified = Flyway.configure()
-                .dataSource(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())
-                .locations("filesystem:" + directory)
-                .load();
-        var result = modified.validateWithResult();
-        assertThat(result.validationSuccessful).isFalse();
-        assertThat(result.invalidMigrations).hasSize(1);
-        assertThat(result.invalidMigrations.getFirst().errorDetails.errorMessage).containsIgnoringCase("checksum");
-    }
+    private AccountRepository accounts;
 
     @LocalServerPort
     private int port;
+
+    @Test
+    void hibernateCreatesSchemaAndJpaPersistsAndReloadsAccounts() {
+        var saved = accounts.saveAndFlush(new Account("unicode-例@example.com", "test-hash"));
+        assertThat(UUID.fromString(saved.getId())).isNotNull();
+        var reloaded = accounts.findById(saved.getId()).orElseThrow();
+        assertThat(reloaded.getEmail()).isEqualTo("unicode-例@example.com");
+        assertThat(reloaded.getPasswordHash()).isEqualTo("test-hash");
+        assertThat(reloaded.getCreatedAt()).isNotNull();
+    }
 
     @Test
     void healthIsAvailableWithoutExposingDetails() throws Exception {
@@ -87,7 +62,7 @@ class VisualNotesApplicationTests {
 
     @Test
     void otherManagementEndpointsAreNotExposed() throws Exception {
-        assertThat(get("/actuator/env").statusCode()).isEqualTo(404);
+        assertThat(get("/actuator/env").statusCode()).isEqualTo(401);
     }
 
     private HttpResponse<String> get(String path) throws Exception {
